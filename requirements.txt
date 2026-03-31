@@ -1,0 +1,7 @@
+streamlit
+pandas
+plotly
+pyvista
+vtk
+supabase
+requests
