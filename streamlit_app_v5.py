@@ -3,19 +3,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 import pyvista as pv
+import requests
 import streamlit as st
 from supabase import create_client
 
 
 # =========================================================
-# Configuración
+# Configuración general
 # =========================================================
 st.set_page_config(
     page_title="Evaluación de Sonificación 4D Flow MRI",
@@ -23,15 +24,26 @@ st.set_page_config(
     layout="wide",
 )
 
-BASE_DIR = Path(__file__).resolve().parent
-FILES_DIR = BASE_DIR / "FILES"
-
-# Cambia este valor si quieres rotar la "sal" del hash local del token
 TOKEN_HASH_SALT = st.secrets.get("TOKEN_HASH_SALT", "change-this-salt")
 
 
 # =========================================================
-# Supabase
+# PEGA AQUÍ TUS 8 URLs PÚBLICAS DE SUPABASE STORAGE
+# =========================================================
+FILE_URLS = {
+    "aaron_output_mp3": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/aaron_output.mp3",
+    "edmund_output_mp3": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/edmund_output.mp3",
+    "phantoma_output_mp3": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/phantoma_output.mp3",
+    "carol_output_mp4": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/carol_output.mp4",
+    "aaron_MRI_vtk": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/aaron_MRI.vtk",
+    "carol_MRI_vtk": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/carol_MRI.vtk",
+    "edmund_MRI_vtk": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/edmund_MRI.vtk",
+    "phantoma_MRI_vtk": "https://jfazdujfatrmrqzamufp.supabase.co/storage/v1/object/public/files/phantoma_MRI.vtk",
+}
+
+
+# =========================================================
+# Supabase DB
 # =========================================================
 @st.cache_resource
 def get_supabase():
@@ -45,25 +57,33 @@ def hash_token(token: str) -> str:
 
 
 # =========================================================
-# Archivos
+# Utilidades archivos remotos
 # =========================================================
-def resolve_file(*candidates: str) -> Path:
-    search_dirs = [FILES_DIR, BASE_DIR]
-    for directory in search_dirs:
-        for name in candidates:
-            path = directory / name
-            if path.exists():
-                return path
-
-    searched = [str(directory / name) for directory in search_dirs for name in candidates]
-    raise FileNotFoundError(
-        "No se encontró ninguno de estos archivos. Rutas buscadas:\n- " + "\n- ".join(searched)
-    )
+def validate_urls() -> None:
+    placeholders = [k for k, v in FILE_URLS.items() if not v.startswith("http")]
+    if placeholders:
+        st.error(
+            "Faltan URLs públicas en FILE_URLS. Reemplaza los placeholders antes de usar la app.\n\n"
+            + "\n".join(f"- {k}" for k in placeholders)
+        )
+        st.stop()
 
 
 @st.cache_data(show_spinner=False)
-def load_bytes(path_str: str) -> bytes:
-    return Path(path_str).read_bytes()
+def download_bytes(url: str) -> bytes:
+    resp = requests.get(url, timeout=60)
+    resp.raise_for_status()
+    return resp.content
+
+
+@st.cache_data(show_spinner=False)
+def download_vtk_to_temp(url: str) -> str:
+    content = download_bytes(url)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vtk")
+    tmp.write(content)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
 
 
 # =========================================================
@@ -90,8 +110,9 @@ def _surface_to_triangles(mesh: pv.DataSet):
 
 
 @st.cache_data(show_spinner=False)
-def build_plotly_figure(path_str: str):
-    mesh = pv.read(path_str)
+def build_plotly_figure_from_url(vtk_url: str):
+    local_vtk = download_vtk_to_temp(vtk_url)
+    mesh = pv.read(local_vtk)
     x, y, z, i, j, k = _surface_to_triangles(mesh)
 
     fig = go.Figure(
@@ -122,41 +143,37 @@ def build_plotly_figure(path_str: str):
     return fig
 
 
-def show_vtk(path: Path, key: str, height: int = 420) -> None:
+def show_vtk_from_url(vtk_url: str, key: str) -> None:
     try:
-        fig = build_plotly_figure(str(path))
+        fig = build_plotly_figure_from_url(vtk_url)
         st.plotly_chart(fig, use_container_width=True, key=key)
     except Exception as e:
         st.error("No fue posible renderizar el archivo 3D.")
-        st.caption(f"Archivo que falló: {path.name}")
+        st.caption(f"URL que falló: {vtk_url}")
         st.exception(e)
 
 
 # =========================================================
-# Datos locales
+# Datos app
 # =========================================================
-EXAMPLE_VTK = resolve_file("carol_MRI.vtk")
-EXAMPLE_VIDEO = resolve_file("carol_output.mp4")
+validate_urls()
+
+EXAMPLE_VTK_URL = FILE_URLS["carol_MRI_vtk"]
+EXAMPLE_VIDEO_URL = FILE_URLS["carol_output_mp4"]
 
 PATIENTS = {
     "aaron": {
-        "audio": resolve_file("aaron_output.mp3"),
-        "vtk": resolve_file("aaron_MRI.vtk", "aaron_MRI.tvk"),
+        "audio_url": FILE_URLS["aaron_output_mp3"],
+        "vtk_url": FILE_URLS["aaron_MRI_vtk"],
     },
     "edmund": {
-        "audio": resolve_file("edmund_output.mp3"),
-        "vtk": resolve_file("edmund_MRI.vtk"),
+        "audio_url": FILE_URLS["edmund_output_mp3"],
+        "vtk_url": FILE_URLS["edmund_MRI_vtk"],
     },
     "phantoma": {
-        "audio": resolve_file("phantoma_output.mp3"),
-        "vtk": resolve_file("phantoma_MRI.vtk"),
+        "audio_url": FILE_URLS["phantoma_output_mp3"],
+        "vtk_url": FILE_URLS["phantoma_MRI_vtk"],
     },
-}
-
-REAL_AUDIO_FOR_LABEL = {
-    "A": "aaron",
-    "B": "edmund",
-    "C": "phantoma",
 }
 
 
@@ -253,8 +270,6 @@ def deterministic_mapping_for_token(token: str) -> TrialMapping:
     audio_patients = ["aaron", "edmund", "phantoma"]
     vtk_patients = ["aaron", "edmund", "phantoma"]
 
-    # Para el usuario: A/B/C siempre se muestran como A/B/C,
-    # pero el contenido se baraja de forma determinística por token.
     import random
 
     rng1 = random.Random(seed_int)
@@ -465,11 +480,11 @@ A continuación se muestra un caso de ejemplo **TEST**:
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("TEST")
-        show_vtk(EXAMPLE_VTK, key="example_vtk")
+        show_vtk_from_url(EXAMPLE_VTK_URL, key="example_vtk")
         st.caption("Puedes rotar, mover y hacer zoom sobre la geometría 3D.")
     with col2:
         st.subheader("Video de referencia")
-        st.video(load_bytes(str(EXAMPLE_VIDEO)))
+        st.video(EXAMPLE_VIDEO_URL)
 
     st.divider()
 
@@ -486,7 +501,7 @@ Después asigna qué geometría corresponde a cada audio.
         patient = mapping.audio_labels[audio_label]
         with audio_cols[idx]:
             st.subheader(f"Audio {audio_label}")
-            st.audio(load_bytes(str(PATIENTS[patient]["audio"])), format="audio/mp3")
+            st.audio(PATIENTS[patient]["audio_url"], format="audio/mp3")
 
     st.markdown("### Geometrías 3D")
     vtk_cols = st.columns(3)
@@ -494,7 +509,7 @@ Después asigna qué geometría corresponde a cada audio.
         patient = mapping.vtk_labels[vtk_label]
         with vtk_cols[idx]:
             st.subheader(f"Paciente {vtk_label}")
-            show_vtk(PATIENTS[patient]["vtk"], key=f"vtk_{vtk_label}")
+            show_vtk_from_url(PATIENTS[patient]["vtk_url"], key=f"vtk_{vtk_label}")
 
     st.divider()
     st.header("Formulario de evaluación")
