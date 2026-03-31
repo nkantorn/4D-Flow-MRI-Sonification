@@ -1,0 +1,9 @@
+.streamlit/secrets.toml
+secrets.example.toml
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+*.ipynb
+links_unicos_sonificacion.csv
